@@ -1,4 +1,5 @@
---util alapok
+﻿--util alapok
+--uj sor
 
 create or replace package body agdw_util is
   
