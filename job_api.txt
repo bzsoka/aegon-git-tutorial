@@ -1,6 +1,8 @@
+--util alapok
+
 create or replace package body agdw_util is
   
-  -- idõméréshez (profiling) 
+  -- idÃµmÃ©rÃ©shez (profiling) 
   function get_ellapsed_sec(time_from timestamp) return number is
     ell_t number ;
   begin
@@ -62,13 +64,13 @@ create or replace package body agdw_util is
              newtab := tabrec.table_name || '_'  || yy || dat ;
           end if ;
           
-          -- ha már létezik a backup table, nem csinál semmit
+          -- ha mÃ¡r lÃ©tezik a backup table, nem csinÃ¡l semmit
           select count(*) into ct from user_tables where table_name = upper(newtab) ;
              
           if (ct=0) then
              execute immediate 
              -- eredeti  'create table ' || owner || '.' || newtab || 
-             -- módosítás: backup táblák a backup sémába kerülnek backup_table_Name mezõ alapján
+             -- mÃ³dosÃ­tÃ¡s: backup tÃ¡blÃ¡k a backup sÃ©mÃ¡ba kerÃ¼lnek backup_table_Name mezÃµ alapjÃ¡n
                ' create table '   || ' backup' || '.' || newtab || 
                ' as select * from ' || owner || '.' || tabrec.table_name ;
           end if ;
