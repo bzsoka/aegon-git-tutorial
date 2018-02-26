@@ -1,0 +1,173 @@
+﻿--util alapok
+--uj sor
+
+create or replace package body agdw_util is
+  
+  -- idõméréshez (profiling) 
+  function get_ellapsed_sec(time_from timestamp) return number is
+    ell_t number ;
+  begin
+    if to_char(systimestamp, 'DD') != to_char(time_from, 'DD') then
+      ell_t :=  60 * 60 * 24 -
+              ( + to_char(time_from, 'HH24') * 60 * 60
+                + to_char(time_from, 'SS.FF6') 
+                + to_char(time_from, 'MI') * 60  )
+              + to_char(systimestamp, 'SS.FF6') 
+              + to_char(systimestamp, 'MI') *60 
+              + to_char(systimestamp, 'HH24') * 60 * 60  ;
+    else
+      ell_t :=  to_char(systimestamp, 'SS.FF6') 
+              + to_char(systimestamp, 'MI') *60 
+              + to_char(systimestamp, 'HH24') * 60 * 60
+              - to_char(time_from, 'HH24') * 60 * 60
+              - to_char(time_from, 'SS.FF6') 
+              - to_char(time_from, 'MI') * 60 ;
+    end if ;
+    return ell_t ;
+  end ;
+  
+
+  --
+  --
+  procedure create_own_backup_tables is
+    jobid number ;
+    owner varchar2(100) ;
+    type cur_typ is ref cursor;
+    c cur_typ ;
+    dat varchar2(100) ;
+    dd number ;
+    yy varchar2(10) ;
+    tabrec  agdw.meta_backup_goal%ROWTYPE;
+    newtab varchar2(200) ;
+    ct integer ;
+  begin
+    -- calling user
+    select user into owner from dual ;
+    -- dates
+    select to_char(sysdate, 'MMDD') into dat from dual ;
+    select to_char(sysdate, 'DD') into dd from dual ;
+    select substr(to_char(sysdate, 'YYYY'), 3, 2) into yy from dual ;
+    
+    agdw.job_api.begin_new_job(jobid, 'agdw_util.create_own_backup_tables', owner, null );
+
+    open c for ' select * from meta_backup_goal ' ||
+               ' where upper(owner) = upper(''' || owner || ''')' ||
+               ' and upper(is_active) = ''Y'' and day_of_month_to_backup = ' || dd ;
+    loop 
+        fetch c into tabrec ;     
+        exit when c%notfound ;
+        
+        begin
+          -- new table name
+          if (tabrec.backup_table_name is not null ) then
+             newtab := tabrec.backup_table_name || '_'  || yy || dat ;
+          else 
+             newtab := tabrec.table_name || '_'  || yy || dat ;
+          end if ;
+          
+          -- ha már létezik a backup table, nem csinál semmit
+          select count(*) into ct from user_tables where table_name = upper(newtab) ;
+             
+          if (ct=0) then
+             execute immediate 
+             -- eredeti  'create table ' || owner || '.' || newtab || 
+             -- módosítás: backup táblák a backup sémába kerülnek backup_table_Name mezõ alapján
+               ' create table '   || ' backup' || '.' || newtab || 
+               ' as select * from ' || owner || '.' || tabrec.table_name ;
+          end if ;
+        exception 
+          when others then
+            job_api.post_error(p_job_id => jobid, p_error_type => 'error', 
+                         p_task_descr => 'agdw_util.create_own_backup_tables: ' || owner ||
+                         ', table: '  || newtab, 
+                         p_sqlcode => sqlcode, p_sqlerrm => sqlerrm) ; 
+        end ;
+    end loop ;
+    close c ;
+      
+    agdw.job_api.finish_job(jobid) ;
+
+  exception 
+    when others then
+       null ;
+       job_api.post_error(p_job_id => jobid, p_error_type => 'error', 
+                         p_task_descr => 'agdw_util.create_own_backup_tables: ' || owner, 
+                         p_sqlcode => sqlcode, p_sqlerrm => sqlerrm) ; 
+  end;
+
+
+  --
+  --
+  procedure recreate_sequence(seq_name in varchar2) is
+  begin    
+    execute immediate 'drop sequence ' || seq_name ;
+    execute immediate 'create sequence ' || seq_name ;
+  exception 
+    when others then
+        -- can not drop: sequence does not exist
+        execute immediate 'create sequence ' || seq_name ;
+  end;
+
+
+  --
+  --
+  procedure disable_user_fgnkeys_for_table(table_name in varchar2, jobid in number) is
+    type cur_typ is ref cursor;
+    c cur_typ ;
+    tabrec  USER_CONSTRAINTS%ROWTYPE;
+    fkexc EXCEPTION;
+  begin    
+    open c for ' SELECT * FROM USER_CONSTRAINTS ' ||
+               ' WHERE R_CONSTRAINT_NAME like ''' || table_name || '%''' ;
+    loop 
+        fetch c into tabrec ;     
+        exit when c%notfound ;
+        execute immediate ' alter table ' || tabrec.table_name || ' disable constraint ' || tabrec.constraint_name ;
+    end loop ;
+    close c ;
+           
+  exception 
+    when others then
+       if jobid is null then
+         dbms_output.put_line(sqlerrm) ;
+         --raise fkexc ;
+       else 
+         job_api.post_error(p_job_id => jobid, p_error_type => 'error', 
+                           p_task_descr => 'agdw_util.disable_user_fgnkeys_for_table: can not disable constraints for table ' || table_name, 
+                           p_sqlcode => sqlcode, p_sqlerrm => sqlerrm) ; 
+       end if ;
+  end;
+
+
+  --
+  --
+  procedure enable_user_fgnkeys_for_table(table_name in varchar2, jobid in number) is
+    type cur_typ is ref cursor;
+    c cur_typ ;
+    tabrec  USER_CONSTRAINTS%ROWTYPE;
+    fkexc EXCEPTION;
+  begin    
+    open c for ' SELECT * FROM USER_CONSTRAINTS ' ||
+               ' WHERE R_CONSTRAINT_NAME like ''' || table_name || '%''' ;
+    loop 
+        fetch c into tabrec ;     
+        exit when c%notfound ;
+        execute immediate ' alter table ' || tabrec.table_name || ' enable constraint ' || tabrec.constraint_name ;
+    end loop ;
+    close c ;
+           
+  exception 
+    when others then
+       if jobid is null then
+         dbms_output.put_line(sqlerrm) ;
+         --raise fkexc ;
+       else 
+         job_api.post_error(p_job_id => jobid, p_error_type => 'error', 
+                           p_task_descr => 'agdw_util.enable_user_fgnkeys_for_table: can not enable constraints for table ' || table_name, 
+                           p_sqlcode => sqlcode, p_sqlerrm => sqlerrm) ; 
+       end if ;
+  end;
+
+
+
+end agdw_util; 
